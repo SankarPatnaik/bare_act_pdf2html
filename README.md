@@ -13,6 +13,18 @@ Convert an Indian Bare Act PDF into a structured JSON document that follows the 
 - schedules (if present)
 - raw text and simple HTML-rendered text for content blocks
 
+### Parser hardening for mixed Bare Act formats
+
+The converter includes additional heuristics to better handle variations across scans and layouts:
+
+- repeated page headers/footers are auto-removed when detected across pages
+- `ARRANGEMENT OF SECTIONS` / `CONTENTS` blocks are ignored so the real body is parsed once
+- hierarchy recognition supports `PART`, `CHAPTER`, `SUBPART`, and `TITLE`
+- section-start detection accepts common number styles (`12`, `12.`, `12)`, `12-A` style leading tokens)
+- nearby all-caps lines are used as fallback names for parts/chapters where headings are split across lines
+
+These changes keep the output in the same JSON shape while improving structural fidelity.
+
 ## Prerequisites
 
 - Python 3.9+ (recommended)

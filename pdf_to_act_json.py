@@ -16,19 +16,24 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 ROMAN_RE = r"[IVXLCDM]+"
 CHAPTER_RE = re.compile(rf"^CHAPTER\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", re.IGNORECASE)
 PART_RE = re.compile(rf"^PART\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", re.IGNORECASE)
+SUBPART_RE = re.compile(rf"^(?:SUB[-\s]?PART)\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", re.IGNORECASE)
+TITLE_RE = re.compile(rf"^TITLE\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", re.IGNORECASE)
 SECTION_START_RE = re.compile(
-    r"^(?P<num>\d+[A-Z]?)\.?\s*(?:\[(?P<bracketed>[^\]]+)\])?\s*(?P<rest>.*)$"
+    r"^(?P<num>\d+[A-Z]?)\s*[\.)-]?\s*(?:\[(?P<bracketed>[^\]]+)\])?\s*(?P<rest>.*)$"
 )
 SCHEDULE_RE = re.compile(r"^THE\s+SCHEDULES?$|^SCHEDULE\s+([A-Z]+|\d+)", re.IGNORECASE)
 ENACTMENT_DATE_RE = re.compile(r"\b(\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+,?\s+\d{4})\b")
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 ACT_NUMBER_RE = re.compile(r"ACT\s+NO\.\s*([\w-]+)", re.IGNORECASE)
+ARRANGEMENT_RE = re.compile(r"^(ARRANGEMENT OF SECTIONS|CONTENTS)$", re.IGNORECASE)
+ARRANGEMENT_END_RE = re.compile(r"^(AN ACT|WHEREAS|BE IT ENACTED)", re.IGNORECASE)
+PAGE_N_OF_M_RE = re.compile(r"^PAGE\s+\d+\s+OF\s+\d+$", re.IGNORECASE)
 
 
 @dataclass
@@ -70,6 +75,12 @@ class Node:
         return payload
 
 
+@dataclass
+class LineWithPage:
+    text: str
+    page_no: int
+
+
 def to_html(text: str) -> str:
     if not text:
         return ""
@@ -103,17 +114,47 @@ def extract_pdf_pages(pdf_path: Path) -> List[str]:
     return pages
 
 
-def normalize_lines(pages: List[str]) -> List[str]:
-    lines: List[str] = []
+def _iter_normalized_page_lines(page_text: str) -> Iterable[str]:
+    for raw_line in page_text.splitlines():
+        line = " ".join(raw_line.replace("\u00a0", " ").split()).strip()
+        if line:
+            yield line
+
+
+def _repeated_header_footer_lines(pages: List[str]) -> set[str]:
+    edge_occurrence_count: Dict[str, int] = {}
+    page_count = len(pages)
+
     for page_text in pages:
-        for raw_line in page_text.splitlines():
-            line = " ".join(raw_line.replace("\u00a0", " ").split()).strip()
-            if not line:
-                continue
-            # Drop running page numbers only; keep all meaningful text.
+        normalized = list(_iter_normalized_page_lines(page_text))
+        if not normalized:
+            continue
+        edge_candidates = set(normalized[:2] + normalized[-2:])
+        for candidate in edge_candidates:
+            edge_occurrence_count[candidate] = edge_occurrence_count.get(candidate, 0) + 1
+
+    # Keep only "high confidence" repeated edge lines.
+    return {
+        text
+        for text, count in edge_occurrence_count.items()
+        if page_count >= 3 and count >= max(3, int(page_count * 0.6))
+    }
+
+
+def normalize_lines(pages: List[str]) -> List[LineWithPage]:
+    repeated_edge_lines = _repeated_header_footer_lines(pages)
+    lines: List[LineWithPage] = []
+
+    for page_idx, page_text in enumerate(pages, start=1):
+        for line in _iter_normalized_page_lines(page_text):
+            # Drop noisy pagination/footer lines only.
             if re.fullmatch(r"\d+", line):
                 continue
-            lines.append(line)
+            if PAGE_N_OF_M_RE.match(line):
+                continue
+            if line in repeated_edge_lines and len(line) > 5:
+                continue
+            lines.append(LineWithPage(text=line, page_no=page_idx))
     return lines
 
 
@@ -130,8 +171,8 @@ def split_heading_and_body(text: str) -> Tuple[str, str]:
     return text, ""
 
 
-def parse_metadata(lines: List[str], pdf_path: Path) -> Dict:
-    title = lines[0] if lines else pdf_path.stem
+def parse_metadata(lines: List[LineWithPage], pdf_path: Path) -> Dict:
+    title = lines[0].text if lines else pdf_path.stem
     handle_id = pdf_path.stem
     year = ""
     act_number = ""
@@ -139,7 +180,8 @@ def parse_metadata(lines: List[str], pdf_path: Path) -> Dict:
 
     long_title_lines: List[str] = []
     started = False
-    for line in lines[:120]:
+    for entry in lines[:180]:
+        line = entry.text
         if not year:
             ym = YEAR_RE.search(line)
             if ym:
@@ -194,7 +236,19 @@ def to_iso_date(date_text: str) -> str:
     return ""
 
 
-def parse_structure(lines: List[str]) -> Tuple[List[Node], List[Section], List[Dict], List[str]]:
+def is_likely_container_name(line: str) -> bool:
+    if not line or len(line) < 3:
+        return False
+    if len(line) > 160:
+        return False
+    alpha_count = sum(1 for c in line if c.isalpha())
+    if alpha_count < 3:
+        return False
+    uppercase_ratio = sum(1 for c in line if c.isupper()) / max(alpha_count, 1)
+    return uppercase_ratio > 0.6
+
+
+def parse_structure(lines: List[LineWithPage]) -> Tuple[List[Node], List[Section], List[Dict], List[str]]:
     body: List[Node] = []
     uncategorised_sections: List[Section] = []
     schedules: List[Dict] = []
@@ -203,6 +257,8 @@ def parse_structure(lines: List[str]) -> Tuple[List[Node], List[Section], List[D
     node_stack: List[Node] = []
     current_section: Optional[Section] = None
     in_schedule_zone = False
+    in_arrangement_zone = False
+    pending_name_node: Optional[Node] = None
 
     def attach_section(sec: Section) -> None:
         if node_stack:
@@ -216,34 +272,82 @@ def parse_structure(lines: List[str]) -> Tuple[List[Node], List[Section], List[D
             attach_section(current_section)
             current_section = None
 
-    for line in lines:
+    def add_node(node: Node, allowed_parent_types: Tuple[str, ...]) -> None:
+        nonlocal pending_name_node
+        close_section()
+        # Exit stack until parent is compatible.
+        while node_stack and node_stack[-1].type not in allowed_parent_types:
+            node_stack.pop()
+        if node_stack and node_stack[-1].type in allowed_parent_types:
+            node_stack[-1].children.append(node)
+        else:
+            body.append(node)
+        node_stack.append(node)
+        pending_name_node = node if not node.name else None
+
+    for entry in lines:
+        line = entry.text
+        if ARRANGEMENT_RE.match(line):
+            in_arrangement_zone = True
+            continue
+
+        if in_arrangement_zone:
+            if ARRANGEMENT_END_RE.match(line):
+                in_arrangement_zone = False
+            elif (
+                CHAPTER_RE.match(line)
+                or PART_RE.match(line)
+                or SUBPART_RE.match(line)
+                or TITLE_RE.match(line)
+                or SECTION_START_RE.match(line)
+            ):
+                continue
+            else:
+                # End of arrangement zone when narrative prose begins.
+                if len(line.split()) > 5:
+                    in_arrangement_zone = False
+                else:
+                    continue
+
+        if pending_name_node and is_likely_container_name(line):
+            pending_name_node.name = line.strip(" :-")
+            pending_name_node = None
+            continue
+
         chap = CHAPTER_RE.match(line)
         if chap:
-            close_section()
             label = f"CHAPTER {chap.group(1).upper()}"
             name = chap.group(2).strip(" :-")
             chapter = Node(type="chapter", label=label, name=name)
-
-            # Chapters can live under PART or directly at body root.
-            while node_stack and node_stack[-1].type == "chapter":
-                node_stack.pop()
-            if node_stack and node_stack[-1].type == "part":
-                node_stack[-1].children.append(chapter)
-            else:
-                body.append(chapter)
-            node_stack.append(chapter)
+            add_node(chapter, allowed_parent_types=("part", "subpart", "title"))
             in_schedule_zone = False
             continue
 
         part = PART_RE.match(line)
         if part:
-            close_section()
             node_stack.clear()
             label = f"PART {part.group(1).upper()}"
             name = part.group(2).strip(" :-")
             part_node = Node(type="part", label=label, name=name)
-            body.append(part_node)
-            node_stack.append(part_node)
+            add_node(part_node, allowed_parent_types=())
+            in_schedule_zone = False
+            continue
+
+        subpart = SUBPART_RE.match(line)
+        if subpart:
+            label = f"SUBPART {subpart.group(1).upper()}"
+            name = subpart.group(2).strip(" :-")
+            subpart_node = Node(type="subpart", label=label, name=name)
+            add_node(subpart_node, allowed_parent_types=("part",))
+            in_schedule_zone = False
+            continue
+
+        title = TITLE_RE.match(line)
+        if title:
+            label = f"TITLE {title.group(1).upper()}"
+            name = title.group(2).strip(" :-")
+            title_node = Node(type="title", label=label, name=name)
+            add_node(title_node, allowed_parent_types=("chapter", "part", "subpart"))
             in_schedule_zone = False
             continue
 
@@ -266,8 +370,8 @@ def parse_structure(lines: List[str]) -> Tuple[List[Node], List[Section], List[D
             sec_no = sec_match.group("num")
             rest = (sec_match.group("rest") or "").strip()
 
-            # Guard against plain numbered list lines by requiring heading-like text.
-            if rest and len(rest) > 2:
+            # Guard against plain numbered bullets/sub-clauses.
+            if rest and len(rest) > 2 and not re.match(r"^\(?[a-zivx]+\)", rest, re.IGNORECASE):
                 close_section()
                 heading, inline_body = split_heading_and_body(rest)
                 current_section = Section(section_no=sec_no, heading=heading)
@@ -291,7 +395,7 @@ def parse_structure(lines: List[str]) -> Tuple[List[Node], List[Section], List[D
                 current_section.content_lines.append(line)
             continue
 
-        if not body and not uncategorised_sections:
+        if not body and not uncategorised_sections and not in_arrangement_zone:
             preamble_lines.append(line)
 
     close_section()
