@@ -1,0 +1,78 @@
+{
+  "handle_id": "string",
+  "title": "string",
+  "year": "string",
+  "act_number": "string",
+  "enactment_date": "string (DD-MMM-YYYY)",
+  "jurisdiction": "string",
+  "actid": "string",
+  "metadata": {
+    "Enactment Date": "string (YYYY-MM-DD)",
+    "Long Title": "string",
+    "Ministry": "string",
+    "Department": "string",
+    "Enforcement Date": "string (DD-MM-YYYY)"
+  },
+  "<Act Title>": {
+    "content_html": "string",
+    "content_raw": "string"
+  },
+  "pdfs": [
+    {
+      "lang": "string",
+      "url": "string",
+      "filename": "string",
+      "local_path": "string"
+    }
+  ],
+  "body": [
+    {
+      "type": "string (chapter | part)",
+      "label": "string (e.g. 'CHAPTER I', 'PART III')",
+      "name": "string (e.g. 'PRELIMINARY', 'MISCELLANEOUS')",
+      "sections": [
+        {
+          "section_no": "string",
+          "heading": "string",
+          "content_html": "string",
+          "content_raw": "string",
+          "footnote_html": "string"
+        }
+      ],
+      "children": [
+        {
+          "type": "string (chapter)",
+          "label": "string",
+          "name": "string",
+          "sections": [
+            {
+              "section_no": "string",
+              "heading": "string",
+              "content_html": "string",
+              "content_raw": "string",
+              "footnote_html": "string"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "uncategorised_sections": [
+    {
+      "section_no": "string",
+      "heading": "string",
+      "content_html": "string",
+      "content_raw": "string",
+      "footnote_html": "string"
+    }
+  ],
+  "schedules": [
+    {
+      "schedule_no": "string",
+      "title": "string",
+      "pdf_url": "string",
+      "local_pdf_path": "string"
+    }
+  ],
+  "subordinate_legislation": {}
+}
