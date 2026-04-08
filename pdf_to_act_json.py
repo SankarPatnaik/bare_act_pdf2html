@@ -24,9 +24,7 @@ CHAPTER_RE = re.compile(rf"^CHAPTER\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", r
 PART_RE = re.compile(rf"^PART\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", re.IGNORECASE)
 SUBPART_RE = re.compile(rf"^(?:SUB[-\s]?PART)\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", re.IGNORECASE)
 TITLE_RE = re.compile(rf"^TITLE\s+({ROMAN_RE}|\d+[A-Z]?)\b[:.\-\s]*(.*)$", re.IGNORECASE)
-SECTION_START_RE = re.compile(
-    r"^(?P<num>\d+[A-Z]?)\s*[\.)-]?\s*(?:\[(?P<bracketed>[^\]]+)\])?\s*(?P<rest>.*)$"
-)
+SECTION_START_RE = re.compile(r"^(?P<num>\d+[A-Z]?)\s*[\.)-]?\s*(?P<rest>.*)$")
 SCHEDULE_RE = re.compile(r"^THE\s+SCHEDULES?$|^SCHEDULE\s+([A-Z]+|\d+)", re.IGNORECASE)
 ENACTMENT_DATE_RE = re.compile(r"\b(\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+,?\s+\d{4})\b")
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
@@ -248,6 +246,31 @@ def is_likely_container_name(line: str) -> bool:
     return uppercase_ratio > 0.6
 
 
+def is_likely_section_start(line: str, sec_no: str, rest: str) -> bool:
+    """Reject list items/sub-clauses that can look like section headings."""
+    if not rest:
+        return False
+
+    # Common sub-clause shape: `1[(1) ...` / `1(1) ...`
+    if re.match(r"^\d+[A-Z]?[\[(]", line):
+        return False
+
+    stripped_rest = rest.strip()
+    if not stripped_rest:
+        return False
+
+    # Section headings usually begin with a word, not clause punctuation.
+    if stripped_rest[0] in "([,;:":
+        return False
+
+    heading, _ = split_heading_and_body(stripped_rest)
+    heading_alpha_words = re.findall(r"[A-Za-z]{2,}", heading)
+    if len(heading_alpha_words) < 1:
+        return False
+
+    return True
+
+
 def parse_structure(lines: List[LineWithPage]) -> Tuple[List[Node], List[Section], List[Dict], List[str]]:
     body: List[Node] = []
     uncategorised_sections: List[Section] = []
@@ -370,8 +393,7 @@ def parse_structure(lines: List[LineWithPage]) -> Tuple[List[Node], List[Section
             sec_no = sec_match.group("num")
             rest = (sec_match.group("rest") or "").strip()
 
-            # Guard against plain numbered bullets/sub-clauses.
-            if rest and len(rest) > 2 and not re.match(r"^\(?[a-zivx]+\)", rest, re.IGNORECASE):
+            if is_likely_section_start(line, sec_no, rest):
                 close_section()
                 heading, inline_body = split_heading_and_body(rest)
                 current_section = Section(section_no=sec_no, heading=heading)
